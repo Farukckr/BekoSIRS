@@ -838,100 +838,275 @@ class DashboardSummaryView(APIView):
 
 
 # ----------------------------------------
-# 🔹 RECOMMENDATION (ÖNERİ SİSTEMİ)
+# 🔹 RECOMMENDATION (ÖNERİ SİSTEMİ - ML BASED)
 # ----------------------------------------
+
+# Singleton pattern for ML recommender to avoid reloading on every request
+_recommender_instance = None
+
+def get_recommender():
+    """Get or create the ML recommender singleton instance."""
+    global _recommender_instance
+    if _recommender_instance is None:
+        from .ml_recommender import HybridRecommender
+        _recommender_instance = HybridRecommender()
+    return _recommender_instance
+
+def reset_recommender():
+    """Force recommender to reload and retrain."""
+    global _recommender_instance
+    _recommender_instance = None
+
 class RecommendationViewSet(viewsets.ModelViewSet):
     """
-    Ürün önerileri.
-    GET /api/recommendations/ - Kullanıcıya özel öneriler
-    POST /api/recommendations/generate/ - Öneri oluştur
+    ML-powered product recommendation system.
+    GET /api/recommendations/ - Get personalized ML recommendations
+    GET /api/recommendations/similar/?product_id=X - Get similar products
+    POST /api/recommendations/retrain/ - Retrain ML model (Admin only)
+    POST /api/recommendations/generate/ - Generate and save recommendations to DB
     """
     serializer_class = RecommendationSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        """Get saved recommendations from database."""
         return Recommendation.objects.filter(customer=self.request.user).select_related('product')
+
+    def list(self, request):
+        """
+        GET /api/recommendations/
+        Get personalized ML-based recommendations for the current user.
+        Returns real-time recommendations from ML model.
+        """
+        try:
+            recommender = get_recommender()
+            recommendations = recommender.recommend(request.user, top_n=10)
+            
+            # Format results for API response
+            results = []
+            for rec in recommendations:
+                results.append({
+                    'product': ProductSerializer(rec['product']).data,
+                    'score': float(rec['score']),
+                    'reason': 'Kişiselleştirilmiş öneri (ML tabanlı)'
+                })
+            
+            return Response({
+                'count': len(results),
+                'recommendations': results
+            })
+        except Exception as e:
+            # Fallback to database recommendations if ML fails
+            print(f"ML recommendation error: {e}")
+            saved_recs = self.get_queryset()
+            return Response({
+                'count': saved_recs.count(),
+                'recommendations': RecommendationSerializer(saved_recs, many=True).data,
+                'note': 'Using saved recommendations (ML unavailable)'
+            })
+
+    @action(detail=False, methods=['get'], url_path='similar')
+    def similar_products(self, request):
+        """
+        GET /api/recommendations/similar/?product_id=X
+        Get products similar to the specified product using content-based filtering.
+        """
+        product_id = request.query_params.get('product_id')
+        
+        if not product_id:
+            return Response(
+                {'error': 'product_id parameter is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            product = Product.objects.get(id=product_id)
+        except Product.DoesNotExist:
+            return Response(
+                {'error': 'Product not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        try:
+            recommender = get_recommender()
+            
+            # Use content-based similarity from the ML model
+            if recommender.similarity_matrix is not None and product_id in recommender.indices:
+                idx = recommender.indices[product_id]
+                similarity_scores = recommender.similarity_matrix[idx]
+                
+                # Get top 10 similar products (excluding the product itself)
+                top_n = 10
+                similar_indices = similarity_scores.argsort()[::-1][1:top_n+1]
+                
+                results = []
+                for sim_idx in similar_indices:
+                    if similarity_scores[sim_idx] > 0:
+                        prod_id = recommender.products_df.iloc[sim_idx]['id']
+                        try:
+                            similar_product = Product.objects.get(id=prod_id)
+                            results.append({
+                                'product': ProductSerializer(similar_product).data,
+                                'score': float(similarity_scores[sim_idx]),
+                                'reason': 'Benzer özellikler'
+                            })
+                        except Product.DoesNotExist:
+                            continue
+                
+                return Response({
+                    'product_id': product_id,
+                    'product_name': product.name,
+                    'count': len(results),
+                    'similar_products': results
+                })
+            else:
+                # Fallback: simple category-based similarity
+                similar = Product.objects.filter(
+                    category=product.category,
+                    stock__gt=0
+                ).exclude(id=product_id).order_by('-id')[:10]
+                
+                results = []
+                for p in similar:
+                    results.append({
+                        'product': ProductSerializer(p).data,
+                        'score': 0.5,
+                        'reason': f'Aynı kategori: {product.category.name if product.category else "N/A"}'
+                    })
+                
+                return Response({
+                    'product_id': product_id,
+                    'product_name': product.name,
+                    'count': len(results),
+                    'similar_products': results,
+                    'note': 'Using simple category-based similarity'
+                })
+                
+        except Exception as e:
+            return Response(
+                {'error': f'Recommendation error: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['post'], url_path='retrain', permission_classes=[IsAdminUser])
+    def retrain_model(self, request):
+        """
+        POST /api/recommendations/retrain/
+        Force the ML model to retrain with latest data.
+        Admin only.
+        """
+        try:
+            reset_recommender()
+            recommender = get_recommender()
+            
+            return Response({
+                'success': True,
+                'message': 'ML model retrained successfully',
+                'model_info': {
+                    'total_products': len(recommender.products_df) if recommender.products_df is not None else 0,
+                    'has_similarity_matrix': recommender.similarity_matrix is not None,
+                    'has_collaborative_model': recommender.svd_model is not None
+                }
+            })
+        except Exception as e:
+            return Response(
+                {'error': f'Retraining failed: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
     @action(detail=False, methods=['post'], url_path='generate')
     def generate_recommendations(self, request):
         """
         POST /api/recommendations/generate/
-        Kullanıcının görüntüleme geçmişine göre öneri oluştur
+        Generate ML recommendations and save them to the database.
+        This allows offline recommendations and tracking.
         """
         user = request.user
 
-        # Mevcut önerileri temizle
-        Recommendation.objects.filter(customer=user).delete()
-
-        # Görüntüleme geçmişinden kategorileri al
-        view_history = ViewHistory.objects.filter(customer=user).select_related('product__category')
-        viewed_product_ids = view_history.values_list('product_id', flat=True)
-
-        # En çok görüntülenen kategorileri bul
-        category_counts = {}
-        for vh in view_history:
-            if vh.product.category:
-                cat_id = vh.product.category.id
-                category_counts[cat_id] = category_counts.get(cat_id, 0) + vh.view_count
-
-        # Kategori bazında öneri oluştur
-        recommendations_created = []
-
-        for category_id, view_count in sorted(category_counts.items(), key=lambda x: -x[1])[:3]:
-            # Bu kategoriden görüntülenmemiş ürünleri al
-            products = Product.objects.filter(
-                category_id=category_id,
-                stock__gt=0
-            ).exclude(
-                id__in=viewed_product_ids
-            ).order_by('-id')[:5]
-
-            for i, product in enumerate(products):
-                score = min(1.0, view_count / 10) * (1 - i * 0.1)
-                rec, created = Recommendation.objects.get_or_create(
-                    customer=user,
-                    product=product,
-                    defaults={
-                        'score': score,
-                        'reason': f'İlgilendiğiniz {product.category.name} kategorisinden'
-                    }
-                )
-                if created:
-                    recommendations_created.append(rec)
-
-        # Wishlist'teki ürünlerin kategorilerinden de öneri ekle
         try:
-            wishlist = Wishlist.objects.get(customer=user)
-            for item in wishlist.items.select_related('product__category').all():
-                if item.product.category:
-                    related_products = Product.objects.filter(
-                        category=item.product.category,
-                        stock__gt=0
-                    ).exclude(
-                        id__in=viewed_product_ids
-                    ).exclude(
-                        id=item.product.id
-                    )[:3]
+            # Get ML recommendations
+            recommender = get_recommender()
+            ml_recommendations = recommender.recommend(user, top_n=15)
+            
+            # Clear old recommendations
+            Recommendation.objects.filter(customer=user).delete()
+            
+            # Save to database
+            recommendations_created = []
+            for rec in ml_recommendations:
+                recommendation = Recommendation.objects.create(
+                    customer=user,
+                    product=rec['product'],
+                    score=float(rec['score']),
+                    reason='ML-based personalized recommendation'
+                )
+                recommendations_created.append(recommendation)
+            
+            # Create notification if user has it enabled
+            if user.notify_recommendations and recommendations_created:
+                Notification.objects.create(
+                    user=user,
+                    notification_type='recommendation',
+                    title='Yeni Ürün Önerileri',
+                    message=f'Size özel {len(recommendations_created)} yeni ürün önerisi hazırlandı!',
+                    related_product=recommendations_created[0].product if recommendations_created else None
+                )
+            
+            return Response({
+                'success': True,
+                'recommendations_count': len(recommendations_created),
+                'recommendations': RecommendationSerializer(recommendations_created, many=True).data
+            })
+            
+        except Exception as e:
+            # Fallback to simple category-based recommendations
+            print(f"ML generation error: {e}, falling back to simple recommendations")
+            
+            # Clear old recommendations
+            Recommendation.objects.filter(customer=user).delete()
+            
+            # Görüntüleme geçmişinden kategorileri al
+            view_history = ViewHistory.objects.filter(customer=user).select_related('product__category')
+            viewed_product_ids = view_history.values_list('product_id', flat=True)
 
-                    for product in related_products:
-                        rec, created = Recommendation.objects.get_or_create(
-                            customer=user,
-                            product=product,
-                            defaults={
-                                'score': 0.7,
-                                'reason': f'İstek listenizdeki {item.product.name} ile benzer'
-                            }
-                        )
-                        if created:
-                            recommendations_created.append(rec)
-        except Wishlist.DoesNotExist:
-            pass
+            # En çok görüntülenen kategorileri bul
+            category_counts = {}
+            for vh in view_history:
+                if vh.product.category:
+                    cat_id = vh.product.category.id
+                    category_counts[cat_id] = category_counts.get(cat_id, 0) + vh.view_count
 
-        return Response({
-            'success': True,
-            'recommendations_count': len(recommendations_created),
-            'recommendations': RecommendationSerializer(recommendations_created, many=True).data
-        })
+            # Kategori bazında öneri oluştur
+            recommendations_created = []
+
+            for category_id, view_count in sorted(category_counts.items(), key=lambda x: -x[1])[:3]:
+                # Bu kategoriden görüntülenmemiş ürünleri al
+                products = Product.objects.filter(
+                    category_id=category_id,
+                    stock__gt=0
+                ).exclude(
+                    id__in=viewed_product_ids
+                ).order_by('-id')[:5]
+
+                for i, product in enumerate(products):
+                    score = min(1.0, view_count / 10) * (1 - i * 0.1)
+                    rec, created = Recommendation.objects.get_or_create(
+                        customer=user,
+                        product=product,
+                        defaults={
+                            'score': score,
+                            'reason': f'İlgilendiğiniz {product.category.name} kategorisinden'
+                        }
+                    )
+                    if created:
+                        recommendations_created.append(rec)
+
+            return Response({
+                'success': True,
+                'recommendations_count': len(recommendations_created),
+                'recommendations': RecommendationSerializer(recommendations_created, many=True).data,
+                'note': 'Using simple category-based recommendations (ML unavailable)'
+            })
 
     @action(detail=True, methods=['post'], url_path='click')
     def record_click(self, request, pk=None):

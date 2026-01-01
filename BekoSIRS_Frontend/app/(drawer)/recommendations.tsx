@@ -15,7 +15,7 @@ import { FontAwesome } from '@expo/vector-icons';
 import { recommendationAPI, wishlistAPI, viewHistoryAPI } from '../../services/api';
 
 interface Recommendation {
-  id: number;
+  id?: number;  // Optional: ML API doesn't provide ID for real-time recommendations
   product: {
     id: number;
     name: string;
@@ -27,8 +27,8 @@ interface Recommendation {
   };
   score: number;
   reason: string;
-  is_shown: boolean;
-  clicked: boolean;
+  is_shown?: boolean;
+  clicked?: boolean;
 }
 
 const RecommendationsScreen = () => {
@@ -40,9 +40,12 @@ const RecommendationsScreen = () => {
   const fetchRecommendations = useCallback(async () => {
     try {
       const response = await recommendationAPI.getRecommendations();
-      setRecommendations(response.data);
+      // ML API returns {count, recommendations} format
+      const data = response.data.recommendations || response.data;
+      setRecommendations(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('Recommendations fetch error:', error);
+      setRecommendations([]);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -62,13 +65,15 @@ const RecommendationsScreen = () => {
     setGenerating(true);
     try {
       const response = await recommendationAPI.generateRecommendations();
+      const count = response.data.recommendations_count || 0;
       Alert.alert(
         'Başarılı',
-        `${response.data.recommendations_count} yeni öneri oluşturuldu!`
+        `${count} yeni öneri oluşturuldu!`
       );
       fetchRecommendations();
-    } catch (error) {
-      Alert.alert('Hata', 'Öneriler oluşturulamadı');
+    } catch (error: any) {
+      console.error('Generate recommendations error:', error);
+      Alert.alert('Hata', error.response?.data?.error || 'Öneriler oluşturulamadı');
     } finally {
       setGenerating(false);
     }
@@ -76,16 +81,18 @@ const RecommendationsScreen = () => {
 
   const handleProductClick = async (recommendation: Recommendation) => {
     try {
-      await Promise.all([
-        recommendationAPI.recordClick(recommendation.id),
-        viewHistoryAPI.recordView(recommendation.product.id),
-      ]);
-      // Update local state
-      setRecommendations((prev) =>
-        prev.map((r) =>
-          r.id === recommendation.id ? { ...r, clicked: true } : r
-        )
-      );
+      // Record click only if recommendation has an ID (saved to database)
+      if (recommendation.id) {
+        await recommendationAPI.recordClick(recommendation.id);
+        // Update local state
+        setRecommendations((prev) =>
+          prev.map((r) =>
+            r.id === recommendation.id ? { ...r, clicked: true } : r
+          )
+        );
+      }
+      // Always record view
+      await viewHistoryAPI.recordView(recommendation.product.id);
     } catch (error) {
       console.log('Click recording failed:', error);
     }
@@ -191,7 +198,7 @@ const RecommendationsScreen = () => {
       <FlatList
         data={recommendations}
         renderItem={renderItem}
-        keyExtractor={(item) => item.id.toString()}
+        keyExtractor={(item, index) => item.id?.toString() || `rec-${item.product.id}-${index}`}
         contentContainerStyle={styles.list}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
