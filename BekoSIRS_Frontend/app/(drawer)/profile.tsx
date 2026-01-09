@@ -16,7 +16,8 @@ import {
 import { FontAwesome } from '@expo/vector-icons';
 import { useAuth } from '../../hooks/useAuth';
 import { useRouter } from 'expo-router';
-import api from '../../services/api';
+import api, { locationAPI } from '../../services/api';
+import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 
 interface UserProfile {
   id: number;
@@ -29,6 +30,18 @@ interface UserProfile {
   date_joined: string;
   address?: string;
   address_city?: string;
+  district?: number;
+  area?: number;
+  address_lat?: string;
+  address_lng?: string;
+  district_name?: string;
+  area_name?: string;
+  open_address?: string;
+}
+
+interface LocationItem {
+  id: number;
+  name: string;
 }
 
 const TRNC_CITIES = [
@@ -57,12 +70,21 @@ const ProfileScreen = () => {
 
   // Address form state
   const [city, setCity] = useState('');
-  const [district, setDistrict] = useState(''); // Mahalle/Bölge
-  const [street, setStreet] = useState('');     // Cadde/Sokak
-  const [buildingNo, setBuildingNo] = useState(''); // Kapı No
-  const [addressNote, setAddressNote] = useState(''); // Tarif (Hastane karşısı vb.)
+  const [districtId, setDistrictId] = useState<number | null>(null);
+  const [areaId, setAreaId] = useState<number | null>(null);
+  const [openAddress, setOpenAddress] = useState('');
 
+  // Map State
+  const [lat, setLat] = useState<number | null>(null);
+  const [lng, setLng] = useState<number | null>(null);
+  const [showMapModal, setShowMapModal] = useState(false);
+
+  // Dropdown Data
+  const [districts, setDistricts] = useState<LocationItem[]>([]);
+  const [areas, setAreas] = useState<LocationItem[]>([]);
   const [showCityModal, setShowCityModal] = useState(false);
+  const [showDistrictModal, setShowDistrictModal] = useState(false);
+  const [showAreaModal, setShowAreaModal] = useState(false);
 
   // Password change
   const [showPasswordChange, setShowPasswordChange] = useState(false);
@@ -70,37 +92,54 @@ const ProfileScreen = () => {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
 
-  // Adres stringini parçalara ayırma (basit mantık)
-  const parseAddress = (fullAddress: string) => {
-    if (!fullAddress) return;
+  const fetchDistricts = async () => {
+    try {
+      const response = await locationAPI.getDistricts();
+      // Handle pagination
+      const data = response.data.results || response.data;
+      setDistricts(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.log('Districts error:', error);
+      setDistricts([]);
+    }
+  };
 
-    // Format: "Mahalle, Cadde, No:12 - Not: Tarif"
-    // Bu basit bir parsing, mükemmel olmayabilir ama iş görür
-    const parts = fullAddress.split(' - Not: ');
-    setAddressNote(parts[1] || ''); // Varsa notu al
-
-    const mainParts = parts[0].split(', ');
-    if (mainParts.length >= 3) {
-      setDistrict(mainParts[0] || '');
-      setStreet(mainParts[1] || '');
-      setBuildingNo(mainParts[2]?.replace('No:', '') || '');
-    } else {
-      // Format uymuyorsa düz metin olarak bölgeye koy
-      setDistrict(parts[0]);
+  const fetchAreas = async (distId: number) => {
+    try {
+      const response = await locationAPI.getAreas(distId);
+      // Handle pagination
+      const data = response.data.results || response.data;
+      setAreas(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.log('Areas error:', error);
+      setAreas([]);
     }
   };
 
   const fetchProfile = useCallback(async () => {
     try {
-      const response = await api.get('/api/profile/');
-      setProfile(response.data);
-      setFirstName(response.data.first_name || '');
-      setLastName(response.data.last_name || '');
-      setEmail(response.data.email || '');
-      setPhoneNumber(response.data.phone_number || '');
+      // Fix endpoint URL: /api/profile/ -> api/v1/profile/
+      const response = await api.get('api/v1/profile/');
+      const data = response.data;
+      setProfile(data);
+      setFirstName(data.first_name || '');
+      setLastName(data.last_name || '');
+      setEmail(data.email || '');
+      setPhoneNumber(data.phone_number || '');
 
-      setCity(response.data.address_city || '');
-      parseAddress(response.data.address || ''); // Mevcut adresi form alanlarına dağıt
+      setCity(data.address_city || '');
+      setDistrictId(data.district || null);
+      setAreaId(data.area || null);
+      setOpenAddress(data.open_address || '');
+
+      if (data.address_lat && data.address_lng) {
+        setLat(parseFloat(data.address_lat));
+        setLng(parseFloat(data.address_lng));
+      } else {
+        // Default to Cyprus/Lefkosa
+        setLat(35.1856);
+        setLng(33.3823);
+      }
 
     } catch (error) {
       console.error('Profil yüklenemedi:', error);
@@ -113,10 +152,19 @@ const ProfileScreen = () => {
   useEffect(() => {
     if (authToken) {
       fetchProfile();
+      fetchDistricts();
     } else {
       setLoading(false);
     }
   }, [authToken, fetchProfile]);
+
+  useEffect(() => {
+    if (districtId) {
+      fetchAreas(districtId);
+    } else {
+      setAreas([]);
+    }
+  }, [districtId]);
 
   useEffect(() => {
     if (!authToken && !isCheckingAuth) {
@@ -132,23 +180,29 @@ const ProfileScreen = () => {
   const handleSave = async () => {
     setSaving(true);
     try {
-      // Adresi birleştir
-      let fullAddress = '';
-      if (district || street || buildingNo) {
-        fullAddress = `${district}, ${street}, No:${buildingNo}`;
-        if (addressNote) {
-          fullAddress += ` - Not: ${addressNote}`;
-        }
-      }
-
       const updateData: any = {
         first_name: firstName,
         last_name: lastName,
         email: email,
         phone_number: phoneNumber,
         address_city: city,
-        address: fullAddress,
+        district: districtId,
+        area: areaId,
+        open_address: openAddress,
+        address_lat: lat,
+        address_lng: lng
       };
+
+      // Create a formatted address string for display fallback
+      let fullAddress = openAddress;
+      const districtName = districts.find(d => d.id === districtId)?.name;
+      const areaName = areas.find(a => a.id === areaId)?.name;
+
+      if (areaName) fullAddress += `, ${areaName}`;
+      if (districtName) fullAddress += `, ${districtName}`;
+      if (city && !fullAddress.includes(city)) fullAddress += `, ${city}`;
+
+      updateData.address = fullAddress;
 
       // Şifre değişikliği varsa ekle
       if (showPasswordChange && newPassword) {
@@ -166,7 +220,7 @@ const ProfileScreen = () => {
         updateData.new_password = newPassword;
       }
 
-      const response = await api.patch('/api/profile/', updateData);
+      const response = await api.patch('api/v1/profile/', updateData);
 
       if (response.data.success) {
         Alert.alert('Başarılı', 'Profil bilgileriniz güncellendi');
@@ -178,7 +232,22 @@ const ProfileScreen = () => {
         fetchProfile();
       }
     } catch (error: any) {
-      Alert.alert('Hata', error.response?.data?.error || 'Güncelleme başarısız');
+      // Improve error message handling
+      let msg = 'Güncelleme başarısız';
+      if (error.response?.data) {
+        const data = error.response.data;
+        if (data.error) msg = data.error;
+        else if (typeof data === 'object') {
+          // Combine field errors
+          const parts = [];
+          for (const k in data) {
+            if (Array.isArray(data[k])) parts.push(`${k}: ${data[k].join(', ')}`);
+            else parts.push(`${k}: ${data[k]}`);
+          }
+          if (parts.length > 0) msg = parts.join('\n');
+        }
+      }
+      Alert.alert('Hata', msg);
     } finally {
       setSaving(false);
     }
@@ -202,14 +271,7 @@ const ProfileScreen = () => {
   const cancelEdit = () => {
     setEditing(false);
     setShowPasswordChange(false);
-    if (profile) {
-      setFirstName(profile.first_name || '');
-      setLastName(profile.last_name || '');
-      setEmail(profile.email || '');
-      setPhoneNumber(profile.phone_number || '');
-      setCity(profile.address_city || '');
-      parseAddress(profile.address || '');
-    }
+    fetchProfile();
     setCurrentPassword('');
     setNewPassword('');
     setConfirmPassword('');
@@ -366,56 +428,81 @@ const ProfileScreen = () => {
 
           {editing ? (
             <>
-              <View style={styles.row}>
-                <View style={[styles.formGroup, { flex: 1, marginRight: 10 }]}>
-                  <Text style={styles.label}>Bölge / Mahalle</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={district}
-                    onChangeText={setDistrict}
-                    placeholder="Örn: Ortaköy"
-                    placeholderTextColor="#9CA3AF"
-                  />
-                </View>
-                <View style={[styles.formGroup, { width: 100 }]}>
-                  <Text style={styles.label}>Kapı No</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={buildingNo}
-                    onChangeText={setBuildingNo}
-                    placeholder="No"
-                    placeholderTextColor="#9CA3AF"
-                  />
-                </View>
-              </View>
-
+              {/* Ilce Secimi */}
               <View style={styles.formGroup}>
-                <Text style={styles.label}>Cadde / Sokak</Text>
-                <TextInput
+                <Text style={styles.label}>İlçe</Text>
+                <TouchableOpacity
                   style={styles.input}
-                  value={street}
-                  onChangeText={setStreet}
-                  placeholder="Örn: Atatürk Caddesi"
-                  placeholderTextColor="#9CA3AF"
-                />
+                  onPress={() => setShowDistrictModal(true)}
+                >
+                  <Text style={{ color: districtId ? '#000' : '#9CA3AF' }}>
+                    {districts.find(d => d.id === districtId)?.name || 'İlçe Seçiniz'}
+                  </Text>
+                  <FontAwesome name="chevron-down" size={12} color="#666" style={{ position: 'absolute', right: 15, top: 15 }} />
+                </TouchableOpacity>
               </View>
 
+              {/* Mahalle/Koy Secimi */}
               <View style={styles.formGroup}>
-                <Text style={styles.label}>Adres Tarifi / Not</Text>
+                <Text style={styles.label}>Mahalle / Köy</Text>
+                <TouchableOpacity
+                  style={[styles.input, !districtId && { backgroundColor: '#f0f0f0' }]}
+                  onPress={() => districtId && setShowAreaModal(true)}
+                  disabled={!districtId}
+                >
+                  <Text style={{ color: areaId ? '#000' : '#9CA3AF' }}>
+                    {areas.find(a => a.id === areaId)?.name || (districtId ? 'Mahalle Seçiniz' : 'Önce İlçe Seçiniz')}
+                  </Text>
+                  <FontAwesome name="chevron-down" size={12} color="#666" style={{ position: 'absolute', right: 15, top: 15 }} />
+                </TouchableOpacity>
+              </View>
+
+              {/* Acik Adres */}
+              <View style={styles.formGroup}>
+                <Text style={styles.label}>Açık Adres / Sokak / Kapı No</Text>
                 <TextInput
                   style={[styles.input, { height: 80, textAlignVertical: 'top' }]}
-                  value={addressNote}
-                  onChangeText={setAddressNote}
-                  placeholder="Örn: Devlet hastanesi karşısı, 2. kat"
+                  value={openAddress}
+                  onChangeText={setOpenAddress}
+                  placeholder="Cadde, sokak, kapı numarası ve adres tarifi"
                   placeholderTextColor="#9CA3AF"
                   multiline
                 />
+              </View>
+
+              {/* Map Button */}
+              <View style={styles.formGroup}>
+                <Text style={styles.label}>Harita Konumu</Text>
+                <TouchableOpacity
+                  style={styles.mapButton}
+                  onPress={() => setShowMapModal(true)}
+                >
+                  <FontAwesome name="map-marker" size={18} color="#fff" />
+                  <Text style={styles.mapButtonText}>
+                    {lat && lng ? 'Konumu Düzenle' : 'Haritadan Konum Seç'}
+                  </Text>
+                </TouchableOpacity>
+                {lat && lng && (
+                  <Text style={styles.locationText}>
+                    Seçilen: {lat.toFixed(5)}, {lng.toFixed(5)}
+                  </Text>
+                )}
               </View>
             </>
           ) : (
             <View style={styles.formGroup}>
               <Text style={styles.label}>Açık Adres</Text>
-              <Text style={styles.value}>{profile?.address || '-'}</Text>
+              <Text style={styles.value}>
+                {profile?.district_name ? `${profile.district_name}, ` : ''}
+                {profile?.area_name ? `${profile.area_name}, ` : ''}
+                {profile?.open_address || profile?.address || '-'}
+              </Text>
+              {profile?.address_lat && (
+                <View style={styles.savedLocationBadge}>
+                  <FontAwesome name="map-marker" size={12} color="#10B981" />
+                  <Text style={styles.savedLocationText}>Konum Kayıtlı</Text>
+                </View>
+              )}
             </View>
           )}
 
@@ -522,47 +609,129 @@ const ProfileScreen = () => {
       </ScrollView>
 
       {/* City Selection Modal */}
-      <Modal
+      <SelectionModal
         visible={showCityModal}
-        transparent={true}
+        title="Şehir Seçiniz"
+        options={TRNC_CITIES.map(c => ({ id: c, name: c }))} // Convert to simple object
+        onSelect={(val: any) => { setCity(val.name); setShowCityModal(false); }}
+        onClose={() => setShowCityModal(false)}
+        selectedId={city}
+      />
+
+      {/* District Selection Modal */}
+      <SelectionModal
+        visible={showDistrictModal}
+        title="İlçe Seçiniz"
+        options={districts}
+        onSelect={(val: any) => {
+          setDistrictId(val.id);
+          setAreaId(null); // Reset area
+          setShowDistrictModal(false);
+        }}
+        onClose={() => setShowDistrictModal(false)}
+        selectedId={districtId}
+      />
+
+      {/* Area Selection Modal */}
+      <SelectionModal
+        visible={showAreaModal}
+        title="Mahalle Seçiniz"
+        options={areas}
+        onSelect={(val: any) => { setAreaId(val.id); setShowAreaModal(false); }}
+        onClose={() => setShowAreaModal(false)}
+        selectedId={areaId}
+      />
+
+      {/* Map Selection Modal */}
+      <Modal
+        visible={showMapModal}
         animationType="slide"
-        onRequestClose={() => setShowCityModal(false)}
+        onRequestClose={() => setShowMapModal(false)}
+        presentationStyle="fullScreen"
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Şehir Seçiniz</Text>
-              <TouchableOpacity onPress={() => setShowCityModal(false)}>
-                <FontAwesome name="close" size={20} color="#666" />
-              </TouchableOpacity>
-            </View>
-            <ScrollView style={{ maxHeight: 300 }}>
-              {TRNC_CITIES.map((c) => (
-                <TouchableOpacity
-                  key={c}
-                  style={styles.cityOption}
-                  onPress={() => {
-                    setCity(c);
-                    setShowCityModal(false);
-                  }}
-                >
-                  <Text style={[
-                    styles.cityOptionText,
-                    city === c && { fontWeight: 'bold', color: '#000' }
-                  ]}>
-                    {c}
-                  </Text>
-                  {city === c && <FontAwesome name="check" size={16} color="#000" />}
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
+        <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity onPress={() => setShowMapModal(false)} style={{ padding: 10 }}>
+              <Text style={{ fontSize: 16, color: '#666' }}>İptal</Text>
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>Konum Seç</Text>
+            <TouchableOpacity onPress={() => setShowMapModal(false)} style={{ padding: 10 }}>
+              <Text style={{ fontSize: 16, color: '#000', fontWeight: 'bold' }}>Tamam</Text>
+            </TouchableOpacity>
           </View>
-        </View>
+          <View style={{ flex: 1 }}>
+            <MapView
+              provider={PROVIDER_GOOGLE}
+              style={{ flex: 1 }}
+              initialRegion={{
+                latitude: lat || 35.1856,
+                longitude: lng || 33.3823,
+                latitudeDelta: 0.05,
+                longitudeDelta: 0.05,
+              }}
+              onPress={(e) => {
+                const coords = e.nativeEvent.coordinate;
+                setLat(coords.latitude);
+                setLng(coords.longitude);
+              }}
+            >
+              {lat && lng && (
+                <Marker coordinate={{ latitude: lat, longitude: lng }} />
+              )}
+            </MapView>
+            <View style={styles.mapInstructionOverlay}>
+              <Text style={styles.mapInstructionText}>
+                Haritada konumunuzu işaretlemek için dokunun.
+              </Text>
+            </View>
+          </View>
+        </SafeAreaView>
       </Modal>
 
     </SafeAreaView>
   );
 };
+
+// Reusable Selection Modal Component
+const SelectionModal = ({ visible, title, options, onSelect, onClose, selectedId }: any) => (
+  <Modal
+    visible={visible}
+    transparent={true}
+    animationType="slide"
+    onRequestClose={onClose}
+  >
+    <View style={styles.modalOverlay}>
+      <View style={styles.modalContent}>
+        <View style={styles.modalHeader}>
+          <Text style={styles.modalTitle}>{title}</Text>
+          <TouchableOpacity onPress={onClose}>
+            <FontAwesome name="close" size={20} color="#666" />
+          </TouchableOpacity>
+        </View>
+        <ScrollView style={{ maxHeight: 300 }}>
+          {(options || []).map((item: any) => {
+            const isSelected = selectedId === item.id || selectedId === item.name;
+            return (
+              <TouchableOpacity
+                key={item.id || item.name}
+                style={styles.cityOption}
+                onPress={() => onSelect(item)}
+              >
+                <Text style={[
+                  styles.cityOptionText,
+                  isSelected && { fontWeight: 'bold', color: '#000' }
+                ]}>
+                  {item.name}
+                </Text>
+                {isSelected && <FontAwesome name="check" size={16} color="#000" />}
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      </View>
+    </View>
+  </Modal>
+);
 
 const styles = StyleSheet.create({
   container: {
@@ -687,6 +856,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     fontSize: 16,
     color: '#111827',
+    textAlignVertical: 'center',
   },
   passwordSection: {
     marginTop: 8,
@@ -789,6 +959,7 @@ const styles = StyleSheet.create({
     paddingBottom: 15,
     borderBottomWidth: 1,
     borderBottomColor: '#eee',
+    paddingHorizontal: 5
   },
   modalTitle: {
     fontSize: 18,
@@ -799,13 +970,56 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    justifyContent: 'space-between'
   },
   cityOptionText: {
     fontSize: 16,
-    color: '#333',
+    color: '#333'
   },
+  mapButton: {
+    backgroundColor: '#2563EB',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderRadius: 10,
+    gap: 8
+  },
+  mapButtonText: {
+    color: '#fff',
+    fontWeight: '600'
+  },
+  locationText: {
+    marginTop: 8,
+    fontSize: 12,
+    color: '#6B7280',
+    textAlign: 'center'
+  },
+  mapInstructionOverlay: {
+    position: 'absolute',
+    bottom: 40,
+    left: 20,
+    right: 20,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    padding: 10,
+    borderRadius: 8,
+    alignItems: 'center'
+  },
+  mapInstructionText: {
+    color: '#fff',
+    fontSize: 14
+  },
+  savedLocationBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 4
+  },
+  savedLocationText: {
+    fontSize: 12,
+    color: '#10B981',
+    fontWeight: '500'
+  }
 });
 
 export default ProfileScreen;

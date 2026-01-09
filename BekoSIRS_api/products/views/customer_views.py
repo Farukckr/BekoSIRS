@@ -37,28 +37,39 @@ class WishlistViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'], url_path='add-item')
     def add_item(self, request):
         """POST /api/wishlist/add-item/ - Add product to wishlist."""
+        print(f"DEBUG: add_item called by {request.user.username} (ID: {request.user.id})")
+        print(f"DEBUG: Payload: {request.data}")
+        
         wishlist, _ = Wishlist.objects.get_or_create(customer=request.user)
         product_id = request.data.get('product_id')
 
         if not product_id:
+            print("DEBUG: Missing product_id")
             return Response({'error': 'product_id gerekli'}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             product = Product.objects.get(id=product_id)
         except Product.DoesNotExist:
+            print(f"DEBUG: Product {product_id} not found")
             return Response({'error': 'Ürün bulunamadı'}, status=status.HTTP_404_NOT_FOUND)
 
         if WishlistItem.objects.filter(wishlist=wishlist, product=product).exists():
+            print("DEBUG: Already in wishlist")
             return Response({'error': 'Bu ürün zaten istek listenizde'}, status=status.HTTP_400_BAD_REQUEST)
 
-        item = WishlistItem.objects.create(
-            wishlist=wishlist,
-            product=product,
-            note=request.data.get('note', ''),
-            notify_on_price_drop=request.data.get('notify_on_price_drop', True),
-            notify_on_restock=request.data.get('notify_on_restock', True)
-        )
-        return Response(WishlistItemSerializer(item, context={'request': request}).data, status=status.HTTP_201_CREATED)
+        try:
+            item = WishlistItem.objects.create(
+                wishlist=wishlist,
+                product=product,
+                note=request.data.get('note', ''),
+                notify_on_price_drop=request.data.get('notify_on_price_drop', True),
+                notify_on_restock=request.data.get('notify_on_restock', True)
+            )
+            print(f"DEBUG: WishlistItem created: {item.id}")
+            return Response(WishlistItemSerializer(item, context={'request': request}).data, status=status.HTTP_201_CREATED)
+        except Exception as e:
+            print(f"DEBUG: Error creating WishlistItem: {e}")
+            return Response({'error': f'Kayıt hatası: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=False, methods=['delete'], url_path='remove-item/(?P<product_id>[^/.]+)')
     def remove_item(self, request, product_id=None):
@@ -400,3 +411,101 @@ class RecommendationViewSet(viewsets.ModelViewSet):
         recommendation.clicked = True
         recommendation.save()
         return Response({'success': True})
+
+
+# ---------------------------
+# KKTC Location Management
+# ---------------------------
+class DistrictViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    ViewSet for listing KKTC Districts.
+    Read-only: GET /api/locations/districts/
+    """
+    from products.models import District
+    from products.serializers import DistrictSerializer
+    
+    queryset = District.objects.all()
+    serializer_class = DistrictSerializer
+    permission_classes = [IsAuthenticated]
+
+
+class AreaViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    ViewSet for listing KKTC Areas.
+    Read-only: GET /api/locations/areas/?district_id=X
+    """
+    from products.models import Area
+    from products.serializers import AreaSerializer
+    from rest_framework import filters
+    
+    serializer_class = AreaSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        """Filter areas by district if district_id parameter is provided"""
+        from products.models import Area
+        queryset = Area.objects.select_related('district').all()
+        
+        district_id = self.request.query_params.get('district_id')
+        if district_id:
+            queryset = queryset.filter(district_id=district_id)
+        
+        return queryset
+
+
+# ---------------------------
+# Customer Management
+# ---------------------------
+class CustomerManagementViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for Customer Management.
+    
+    list: GET /api/customers/?search=xxx&ordering=first_name
+    retrieve: GET /api/customers/{id}/
+    update: PUT/PATCH /api/customers/{id}/
+    """
+    from products.models import CustomUser
+    from products.serializers import CustomerListSerializer, CustomerDetailSerializer, CustomerUpdateSerializer
+    from rest_framework import filters
+    from django.db.models import Q
+    
+    permission_classes = [IsAuthenticated]
+    http_method_names = ['get', 'patch', 'put', 'head', 'options']  # No DELETE or POST
+    
+    def get_queryset(self):
+        """
+        Filter customers (role='customer') with search and ordering
+        """
+        from products.models import CustomUser
+        from django.db.models import Q
+        
+        queryset = CustomUser.objects.filter(role='customer').select_related('district', 'area')
+        
+        # Search by phone, first_name, or last_name
+        search = self.request.query_params.get('search', '').strip()
+        if search:
+            queryset = queryset.filter(
+                Q(phone_number__icontains=search) |
+                Q(first_name__icontains=search) |
+                Q(last_name__icontains=search) |
+                Q(username__icontains=search)
+            )
+        
+        # Ordering (default: first_name)
+        ordering = self.request.query_params.get('ordering', 'first_name')
+        queryset = queryset.order_by(ordering)
+        
+        return queryset
+    
+    def get_serializer_class(self):
+        """Use different serializers for list/detail/update actions"""
+        from products.serializers import CustomerListSerializer, CustomerDetailSerializer, CustomerUpdateSerializer
+        
+        if self.action == 'list':
+            return CustomerListSerializer
+        elif self.action == 'retrieve':
+            return CustomerDetailSerializer
+        elif self.action in ['update', 'partial_update']:
+            return CustomerUpdateSerializer
+        return CustomerListSerializer
+

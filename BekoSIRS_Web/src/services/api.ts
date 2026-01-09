@@ -1,4 +1,5 @@
 import axios from 'axios';
+import type { District, Area, DepotLocation, DepotCreateRequest } from '../types/location';
 
 // Get the base URL from environment variables or default to localhost
 const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api/v1';
@@ -38,8 +39,7 @@ api.interceptors.response.use(
                 const refreshToken = localStorage.getItem('refresh');
                 if (refreshToken) {
                     // Attempt to refresh the token
-                    // Note: You might need to adjust the refresh endpoint path if it differs
-                    const response = await axios.post('http://127.0.0.1:8000/api/v1/token/refresh/', {
+                    const response = await axios.post(`${API_URL}/token/refresh/`, {
                         refresh: refreshToken,
                     });
 
@@ -63,3 +63,65 @@ api.interceptors.response.use(
 );
 
 export default api;
+
+// ===========================================
+// Location APIs
+// ===========================================
+export const locationAPI = {
+    // Get all districts
+    getDistricts: () => api.get<District[]>('/locations/districts/'),
+
+    // Get areas for a district
+    getAreas: (districtId?: number) =>
+        api.get<Area[]>('/locations/areas/', {
+            params: districtId ? { district_id: districtId } : {}
+        }),
+};
+
+// ===========================================
+// Depot APIs
+// ===========================================
+export const depotAPI = {
+    // List all depots
+    list: () => api.get<DepotLocation[]>('/depots/'),
+
+    // Get single depot
+    get: (id: number) => api.get<DepotLocation>(`/depots/${id}/`),
+
+    // Create new depot
+    create: (data: DepotCreateRequest) => api.post<DepotLocation>('/depots/', data),
+
+    // Update depot
+    update: (id: number, data: Partial<DepotCreateRequest>) =>
+        api.patch<DepotLocation>(`/depots/${id}/`, data),
+
+    // Delete depot
+    delete: (id: number) => api.delete(`/depots/${id}/`),
+
+    // Set as default
+    setDefault: (id: number) => api.post<DepotLocation>(`/depots/${id}/set-default/`),
+
+    // Get default depot
+    getDefault: () => api.get<DepotLocation>('/depots/default/'),
+};
+
+// ===========================================
+// Delivery APIs
+// ===========================================
+export const deliveryAPI = {
+    // List deliveries with filters
+    list: (params?: any) => api.get('/deliveries/', { params }),
+
+    // Get delivery stats
+    stats: (params?: any) => api.get('/deliveries/stats/', { params }),
+
+    // Update delivery
+    update: (id: number, data: any) => api.patch(`/deliveries/${id}/`, data),
+
+    // Delete delivery
+    delete: (id: number) => api.delete(`/deliveries/${id}/`),
+
+    // Route Optimization
+    optimize: (data: { date: string; delivery_ids?: number[]; depot_id?: number; algorithm?: string }) =>
+        api.post('/delivery-routes/optimize/', data),
+};

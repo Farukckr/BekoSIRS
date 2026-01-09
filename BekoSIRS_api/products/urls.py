@@ -37,6 +37,23 @@ from products.views import (
     # Delivery
     DeliveryViewSet,
     DeliveryRouteViewSet,
+    ProductAssignmentViewSet,
+)
+
+# Import Depot Management
+from products.views.depot_views import (
+    DepotLocationViewSet,
+)
+
+# Import Location ViewSets
+from products.views.location_views import (
+    DistrictViewSet,
+    AreaViewSet,
+)
+
+# Import Customer Management ViewSets
+from products.views.customer_views import (
+    CustomerManagementViewSet,
 )
 
 # Router ile ViewSet'leri kaydediyoruz
@@ -58,6 +75,17 @@ router.register(r'recommendations', RecommendationViewSet, basename='recommendat
 # Teslimat ve Rota Yönetimi
 router.register(r'deliveries', DeliveryViewSet, basename='delivery')
 router.register(r'delivery-routes', DeliveryRouteViewSet, basename='delivery-route')
+router.register(r'assignments', ProductAssignmentViewSet, basename='assignment')
+
+# KKTC Location Management
+router.register(r'locations/districts', DistrictViewSet, basename='district')
+router.register(r'locations/areas', AreaViewSet, basename='area')
+
+# Depot Management  
+router.register(r'depots', DepotLocationViewSet, basename='depot')
+
+# Customer Management
+router.register(r'customers', CustomerManagementViewSet, basename='customer')
 
 urlpatterns = [
     # Router üzerinden gelen tüm endpointler

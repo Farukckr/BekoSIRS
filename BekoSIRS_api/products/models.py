@@ -3,6 +3,54 @@ from django.contrib.auth.models import AbstractUser
 from dateutil.relativedelta import relativedelta
 
 # -------------------------------
+# 🔹 KKTC Address Models
+# -------------------------------
+class District(models.Model):
+    """KKTC İlçe/Bölge"""
+    name = models.CharField(max_length=100, unique=True, verbose_name="İlçe Adı")
+    center_lat = models.DecimalField(
+        max_digits=10, decimal_places=7, 
+        null=True, blank=True,
+        verbose_name="Merkez Enlem"
+    )
+    center_lng = models.DecimalField(
+        max_digits=10, decimal_places=7, 
+        null=True, blank=True,
+        verbose_name="Merkez Boylam"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        ordering = ['name']
+        verbose_name = "İlçe"
+        verbose_name_plural = "İlçeler"
+    
+    def __str__(self):
+        return self.name
+
+
+class Area(models.Model):
+    """KKTC Mahalle/Köy"""
+    district = models.ForeignKey(
+        District, 
+        on_delete=models.CASCADE, 
+        related_name='areas',
+        verbose_name="İlçe"
+    )
+    name = models.CharField(max_length=100, verbose_name="Mahalle/Köy Adı")
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        ordering = ['district__name', 'name']
+        unique_together = [['district', 'name']]
+        verbose_name = "Mahalle/Köy"
+        verbose_name_plural = "Mahalle/Köyler"
+    
+    def __str__(self):
+        return f"{self.district.name} - {self.name}"
+
+
+# -------------------------------
 # 🔹 Custom User Model
 # -------------------------------
 class CustomUser(AbstractUser):
@@ -43,6 +91,31 @@ class CustomUser(AbstractUser):
         max_digits=10, decimal_places=7, null=True, blank=True,
         verbose_name="Boylam", help_text="Longitude koordinatı"
     )
+
+    # KKTC Structured Address (Yeni)
+    district = models.ForeignKey(
+        District, 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True, 
+        verbose_name="İlçe",
+        related_name="customers"
+    )
+    area = models.ForeignKey(
+        Area, 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True, 
+        verbose_name="Mahalle/Köy",
+        related_name="customers"
+    )
+    open_address = models.TextField(
+        blank=True, 
+        null=True, 
+        verbose_name="Açık Adres",
+        help_text="Ev/Apartman numarası, cadde, sokak vb."
+    )
+    geocoded_at = models.DateTimeField(null=True, blank=True, verbose_name="Son Geocode Tarihi")
 
     def __str__(self):
         return f"{self.username} ({self.role})"
@@ -445,63 +518,6 @@ class PasswordResetToken(models.Model):
         self.save()
 
 
-# -------------------------------
-# 🔹 Delivery (Teslimat)
-# -------------------------------
-class Delivery(models.Model):
-    """Müşterilere yapılacak teslimatları temsil eder."""
-    STATUS_CHOICES = (
-        ('pending', 'Bekliyor'),
-        ('assigned', 'Rotaya Atandı'),
-        ('in_transit', 'Yolda'),
-        ('delivered', 'Teslim Edildi'),
-        ('cancelled', 'İptal'),
-    )
-    
-    customer = models.ForeignKey(
-        CustomUser, 
-        on_delete=models.CASCADE, 
-        related_name='deliveries',
-        verbose_name="Müşteri"
-    )
-    product_ownership = models.ForeignKey(
-        ProductOwnership, 
-        on_delete=models.SET_NULL, 
-        null=True, 
-        blank=True,
-        related_name='deliveries',
-        verbose_name="Satın Alınan Ürün"
-    )
-    delivery_date = models.DateField(verbose_name="Teslimat Tarihi")
-    status = models.CharField(
-        max_length=20, 
-        choices=STATUS_CHOICES, 
-        default='pending',
-        verbose_name="Durum"
-    )
-    
-    # Teslimat Adresi (Müşteri adresinden farklı olabilir)
-    address = models.TextField(verbose_name="Teslimat Adresi")
-    address_lat = models.DecimalField(
-        max_digits=10, decimal_places=7, null=True, blank=True,
-        verbose_name="Enlem"
-    )
-    address_lng = models.DecimalField(
-        max_digits=10, decimal_places=7, null=True, blank=True,
-        verbose_name="Boylam"
-    )
-    
-    notes = models.TextField(blank=True, verbose_name="Notlar")
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        ordering = ['delivery_date', 'created_at']
-        verbose_name = "Teslimat"
-        verbose_name_plural = "Teslimatlar"
-
-    def __str__(self):
-        return f"{self.customer.username} - {self.delivery_date} ({self.get_status_display()})"
 
 
 # -------------------------------
@@ -536,61 +552,250 @@ class DeliveryRoute(models.Model):
         null=True, blank=True,
         verbose_name="Toplam Süre (dk)"
     )
+    # Google Maps Polyline
+    route_polyline = models.TextField(blank=True, null=True, verbose_name="Rota Polyline")
     
     is_optimized = models.BooleanField(default=False, verbose_name="Optimize Edildi")
-    optimized_at = models.DateTimeField(null=True, blank=True)
+    optimized_at = models.DateTimeField(null=True, blank=True, verbose_name="Optimizasyon Tarihi")
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ['-date']
         verbose_name = "Teslimat Rotası"
         verbose_name_plural = "Teslimat Rotaları"
 
     def __str__(self):
-        return f"Rota: {self.date} ({self.stops.count()} durak)"
+        return f"Rota: {self.date} ({self.total_distance_km or 0} km)"
 
 
-# -------------------------------
-# 🔹 Delivery Route Stop (Rota Durağı)
-# -------------------------------
 class DeliveryRouteStop(models.Model):
-    """Rotadaki her bir durak (sıralı)."""
+    """Rota üzerindeki duraklar ve sıralaması."""
     route = models.ForeignKey(
         DeliveryRoute, 
         on_delete=models.CASCADE, 
         related_name='stops',
         verbose_name="Rota"
     )
-    delivery = models.ForeignKey(
-        Delivery, 
+    delivery = models.OneToOneField(
+        'Delivery', 
         on_delete=models.CASCADE, 
-        related_name='route_stops',
+        related_name='route_stop',
         verbose_name="Teslimat"
     )
-    stop_order = models.PositiveIntegerField(
-        verbose_name="Sıra",
-        help_text="0=Mağaza (başlangıç), 1,2,3...=Müşteriler"
-    )
+    stop_order = models.PositiveIntegerField(verbose_name="Sıra No")
     
-    # Tahmini varış
-    estimated_arrival = models.TimeField(
-        null=True, blank=True,
-        verbose_name="Tahmini Varış"
-    )
     distance_from_previous_km = models.DecimalField(
         max_digits=10, decimal_places=2, null=True, blank=True,
-        verbose_name="Önceki Duraktan Mesafe (km)"
+        verbose_name="Önceki Noktadan Mesafe (km)"
     )
     duration_from_previous_min = models.IntegerField(
         null=True, blank=True,
-        verbose_name="Önceki Duraktan Süre (dk)"
+        verbose_name="Önceki Noktadan Süre (dk)"
+    )
+    estimated_arrival = models.DateTimeField(null=True, blank=True, verbose_name="Tahmini Varış")
+    
+    class Meta:
+        ordering = ['stop_order']
+        unique_together = ['route', 'stop_order']
+        verbose_name = "Teslimat Durağı"
+        verbose_name_plural = "Teslimat Durakları"
+    
+    def __str__(self):
+        return f"Stop {self.stop_order}: {self.delivery.customer.username}"
+
+
+# -------------------------------
+# 🔹 Product Assignment (Satış / Ürün Atama)
+# -------------------------------
+class ProductAssignment(models.Model):
+    """Müşteriye atanan/satılan ürünün kaydı."""
+    STATUS_CHOICES = (
+        ('PLANNED', 'Planlandı'),
+        ('SCHEDULED', 'Teslimat Atandı'),
+        ('OUT_FOR_DELIVERY', 'Yolda'),
+        ('DELIVERED', 'Teslim Edildi'),
+        ('CANCELLED', 'İptal'),
     )
 
+    customer = models.ForeignKey(
+        CustomUser, 
+        on_delete=models.CASCADE, 
+        related_name='assignments',
+        verbose_name="Müşteri",
+        limit_choices_to={'role': 'customer'}
+    )
+    product = models.ForeignKey(
+        Product, 
+        on_delete=models.CASCADE, 
+        related_name='assignments',
+        verbose_name="Ürün"
+    )
+    quantity = models.PositiveIntegerField(default=1, verbose_name="Adet")
+    assigned_at = models.DateTimeField(auto_now_add=True, verbose_name="Atama Tarihi")
+    assigned_by = models.ForeignKey(
+        CustomUser, 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True, 
+        related_name='created_assignments',
+        verbose_name="Atayan Kullanıcı"
+    )
+    status = models.CharField(
+        max_length=20, 
+        choices=STATUS_CHOICES, 
+        default='PLANNED',
+        verbose_name="Durum"
+    )
+    notes = models.TextField(blank=True, null=True, verbose_name="Notlar")
+
     class Meta:
-        ordering = ['route', 'stop_order']
-        unique_together = [['route', 'stop_order'], ['route', 'delivery']]
-        verbose_name = "Rota Durağı"
-        verbose_name_plural = "Rota Durakları"
+        ordering = ['-assigned_at']
+        verbose_name = "Ürün Atama"
+        verbose_name_plural = "Ürün Atamaları"
 
     def __str__(self):
-        return f"{self.route.date} - Durak {self.stop_order}: {self.delivery.customer.username}"
+        return f"{self.customer.first_name} - {self.product.name} ({self.get_status_display()})"
+
+
+
+# -------------------------------
+# 🔹 Depot Location (Depo Konumu)
+# -------------------------------
+class DepotLocation(models.Model):
+    """Teslimat başlangıç noktası - Depo/Mağaza konumu"""
+    name = models.CharField(
+        max_length=100, 
+        unique=True,
+        verbose_name="Depo Adı",
+        help_text="Örn: Lefkoşa Ana Depo, Gazimağusa Şube"
+    )
+    latitude = models.DecimalField(
+        max_digits=10, 
+        decimal_places=7,
+        verbose_name="Enlem"
+    )
+    longitude = models.DecimalField(
+        max_digits=10, 
+        decimal_places=7,
+        verbose_name="Boylam"
+    )
+    is_default = models.BooleanField(
+        default=False,
+        verbose_name="Varsayılan Depo",
+        help_text="Yalnızca bir depo varsayılan olabilir"
+    )
+    created_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_depots',
+        verbose_name="Oluşturan"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-is_default', 'name']
+        verbose_name = "Depo Konumu"
+        verbose_name_plural = "Depo Konumları"
+
+    def __str__(self):
+        default_tag = " (Varsayılan)" if self.is_default else ""
+        return f"{self.name}{default_tag}"
+    
+    def save(self, *args, **kwargs):
+        # If this depot is being set as default, unset all others
+        if self.is_default:
+            DepotLocation.objects.filter(is_default=True).exclude(pk=self.pk).update(is_default=False)
+        super().save(*args, **kwargs)
+
+
+# -------------------------------
+# 🔹 Delivery (Teslimat Kaydı)
+# -------------------------------
+class Delivery(models.Model):
+    """Teslimat operasyonlarını yöneten model."""
+    STATUS_CHOICES = (
+        ('WAITING', 'Bekliyor'),
+        ('OUT_FOR_DELIVERY', 'Yolda'),
+        ('DELIVERED', 'Teslim Edildi'),
+        ('FAILED', 'Başarısız'),
+    )
+
+    assignment = models.OneToOneField(
+        'ProductAssignment', 
+        on_delete=models.CASCADE,
+        related_name='delivery',
+        verbose_name="Satış Kaydı",
+        null=True,
+        blank=True
+    )
+    
+    scheduled_date = models.DateField(null=True, blank=True, verbose_name="Planlanan Tarih")
+    time_window_start = models.TimeField(null=True, blank=True, verbose_name="Zaman Aralığı Başlangıç")
+    time_window_end = models.TimeField(null=True, blank=True, verbose_name="Zaman Aralığı Bitiş")
+    
+    # Teslimat Adresi (Snapshot veya Override)
+    address = models.TextField(null=True, blank=True, verbose_name="Teslimat Adresi")
+    address_lat = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True, verbose_name="Enlem")
+    address_lng = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True, verbose_name="Boylam")
+    
+    status = models.CharField(
+        max_length=20, 
+        choices=STATUS_CHOICES, 
+        default='WAITING',
+        verbose_name="Durum"
+    )
+    
+    # Teslimat Sonuçları
+    delivered_at = models.DateTimeField(null=True, blank=True, verbose_name="Teslim Tarihi")
+    delivered_by = models.ForeignKey(
+        CustomUser, 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True, 
+        related_name='completed_deliveries',
+        verbose_name="Teslim Eden Personel"
+    )
+    
+    # Depo Bağlantısı (YENİ)
+    depot = models.ForeignKey(
+        DepotLocation,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='deliveries',
+        verbose_name="Başlangıç Deposu"
+    )
+    
+    # Optimizasyon Alanları
+    delivery_order = models.PositiveIntegerField(default=0, verbose_name="Teslimat Sırası")
+    route_batch_id = models.CharField(max_length=100, null=True, blank=True, verbose_name="Rota Batch ID")
+    distance_km = models.FloatField(null=True, blank=True, verbose_name="Mesafe (KM)")
+    eta_minutes = models.IntegerField(null=True, blank=True, verbose_name="Tahmini Süre (dk)")
+    
+    # Snapshot Alanları (Loglama için)
+    customer_phone_snapshot = models.CharField(max_length=20, null=True, blank=True, verbose_name="Müşteri Tel (Snapshot)")
+    address_snapshot = models.TextField(null=True, blank=True, verbose_name="Adres (Snapshot)")
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['delivery_order', 'scheduled_date']
+        verbose_name = "Teslimat"
+        verbose_name_plural = "Teslimatlar"
+        indexes = [
+            models.Index(fields=['scheduled_date']),
+            models.Index(fields=['status']),
+            models.Index(fields=['route_batch_id']),
+        ]
+
+    def __str__(self):
+        return f"Delivery for {self.assignment}"
+    
+    @property
+    def customer(self):
+        """Shortcut to get customer from assignment"""
+        return self.assignment.customer if self.assignment else None

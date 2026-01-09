@@ -60,6 +60,7 @@ from .biometric_views import (
 from .delivery_views import (
     DeliveryViewSet,
     DeliveryRouteViewSet,
+    ProductAssignmentViewSet,
 )
 
 __all__ = [
@@ -97,4 +98,5 @@ __all__ = [
     # Delivery
     'DeliveryViewSet',
     'DeliveryRouteViewSet',
+    'ProductAssignmentViewSet',
 ]

@@ -71,7 +71,7 @@ export default function ProductDetailScreen() {
 
   const fetchProduct = async () => {
     try {
-      const response = await api.get(`/api/products/${id}/`);
+      const response = await api.get(`/api/v1/products/${id}/`);
       setProduct(response.data);
       checkWishlistStatus();
     } catch (error) {

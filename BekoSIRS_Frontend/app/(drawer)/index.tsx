@@ -10,10 +10,23 @@ import {
   TouchableOpacity,
   RefreshControl,
   ScrollView,
+  Image,
+  Dimensions,
 } from 'react-native';
 import { FontAwesome } from '@expo/vector-icons';
-import api, { wishlistAPI } from '../../services/api';
+import api, { wishlistAPI, productAPI } from '../../services/api';
 import { ProductCard } from '../../components/ProductCard';
+import { useRouter } from 'expo-router';
+
+const { width } = Dimensions.get('window');
+const CARD_WIDTH = (width - 48) / 2;
+
+const getImageUrl = (imagePath: string | null): string | null => {
+  if (!imagePath) return null;
+  if (imagePath.startsWith('http')) return imagePath;
+  const baseUrl = (api.defaults.baseURL || '').replace(/\/$/, '');
+  return `${baseUrl}${imagePath}`;
+};
 
 interface Category {
   id: number;
@@ -32,7 +45,9 @@ interface Product {
 }
 
 const HomeScreen = () => {
+  const router = useRouter();
   const [products, setProducts] = useState<Product[]>([]);
+  const [popularProducts, setPopularProducts] = useState<Product[]>([]);
   const [filteredProducts, setFilteredProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
@@ -43,15 +58,30 @@ const HomeScreen = () => {
 
   const fetchData = useCallback(async () => {
     try {
-      const [productsRes, categoriesRes, wishlistRes] = await Promise.all([
-        api.get('/api/products/?page_size=1000'),
-        api.get('/api/categories/?page_size=1000'),
-        wishlistAPI.getWishlist(),
-      ]);
+      const { getToken } = await import('../../storage/storage.native');
+      const token = await getToken();
+
+      const requests: Promise<any>[] = [
+        api.get('/api/v1/products/?page_size=1000'),
+        api.get('/api/v1/categories/?page_size=1000'),
+        productAPI.getPopularProducts(),
+      ];
+
+      if (token) {
+        requests.push(wishlistAPI.getWishlist());
+      }
+
+      const responses = await Promise.all(requests);
+      const productsRes = responses[0];
+      const categoriesRes = responses[1];
+      const popularRes = responses[2];
+      const wishlistRes = token ? responses[3] : null;
+
       const productsData = Array.isArray(productsRes.data) ? productsRes.data : productsRes.data.results || [];
       const categoriesData = Array.isArray(categoriesRes.data) ? categoriesRes.data : categoriesRes.data.results || [];
+      const popularData = Array.isArray(popularRes.data) ? popularRes.data : popularRes.data.results || [];
 
-      if (wishlistRes.data && wishlistRes.data.items) {
+      if (wishlistRes?.data && wishlistRes.data.items) {
         const ids = wishlistRes.data.items.map((item: any) => item.product.id);
         setWishlistIds(new Set(ids));
       }
@@ -59,6 +89,7 @@ const HomeScreen = () => {
       setProducts(productsData);
       setFilteredProducts(productsData);
       setCategories(categoriesData);
+      setPopularProducts(popularData.slice(0, 6));
     } catch (error) {
       console.error('Veri yükleme hatası:', error);
     } finally {
@@ -116,12 +147,34 @@ const HomeScreen = () => {
     );
   }
 
+  const PopularProductCard = ({ item }: { item: Product }) => (
+    <TouchableOpacity
+      style={styles.popularCard}
+      onPress={() => router.push(`/product/${item.id}`)}
+      activeOpacity={0.8}
+    >
+      {item.image ? (
+        <Image
+          source={{ uri: getImageUrl(item.image) || '' }}
+          style={styles.popularImage}
+          resizeMode="cover"
+        />
+      ) : (
+        <View style={[styles.popularImage, styles.imagePlaceholder]}>
+          <FontAwesome name="cube" size={40} color="#D1D5DB" />
+        </View>
+      )}
+      <View style={styles.popularInfo}>
+        <Text style={styles.popularBrand} numberOfLines={1}>{item.brand}</Text>
+        <Text style={styles.popularName} numberOfLines={2}>{item.name}</Text>
+        <Text style={styles.popularPrice}>{item.price} TL</Text>
+      </View>
+    </TouchableOpacity>
+  );
+
   /* Simplified Header Logic */
   const ListHeader = () => (
     <View style={styles.headerContainer}>
-      <Text style={styles.title}>Keşfet</Text>
-      {/* Removed Subtitle */}
-
       {/* Arama Kutusu */}
       <View style={styles.searchContainer}>
         <FontAwesome name="search" size={16} color="#9CA3AF" style={styles.searchIcon} />
@@ -138,6 +191,27 @@ const HomeScreen = () => {
           </TouchableOpacity>
         )}
       </View>
+
+      {/* Popular Products Section */}
+      {popularProducts.length > 0 && (
+        <View style={styles.popularSection}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Popüler Ürünler</Text>
+            <TouchableOpacity>
+              <Text style={styles.seeAll}>Tümünü Gör</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.popularScroll}
+          >
+            {popularProducts.map((product) => (
+              <PopularProductCard key={product.id} item={product} />
+            ))}
+          </ScrollView>
+        </View>
+      )}
 
       {/* Kategori Filtreleri */}
       <ScrollView
@@ -184,20 +258,22 @@ const HomeScreen = () => {
       </ScrollView>
 
       {/* Aktif Filtre Bilgisi */}
-      {(searchQuery || selectedCategory !== null) && (
-        <View style={styles.activeFilterContainer}>
-          <Text style={styles.activeFilterText}>
-            {selectedCategory !== null &&
-              `Kategori: ${categories.find((c) => c.id === selectedCategory)?.name}`}
-            {searchQuery && selectedCategory !== null && ' • '}
-            {searchQuery && `Arama: "${searchQuery}"`}
-          </Text>
-          <TouchableOpacity onPress={clearFilters} style={styles.clearFiltersButton}>
-            <Text style={styles.clearFiltersText}>Temizle</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-    </View>
+      {
+        (searchQuery || selectedCategory !== null) && (
+          <View style={styles.activeFilterContainer}>
+            <Text style={styles.activeFilterText}>
+              {selectedCategory !== null &&
+                `Kategori: ${categories.find((c) => c.id === selectedCategory)?.name}`}
+              {searchQuery && selectedCategory !== null && ' • '}
+              {searchQuery && `Arama: "${searchQuery}"`}
+            </Text>
+            <TouchableOpacity onPress={clearFilters} style={styles.clearFiltersButton}>
+              <Text style={styles.clearFiltersText}>Temizle</Text>
+            </TouchableOpacity>
+          </View>
+        )
+      }
+    </View >
   );
 
   return (
@@ -277,6 +353,72 @@ const styles = StyleSheet.create({
   },
   clearButton: {
     padding: 8,
+  },
+  popularSection: {
+    marginBottom: 20,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  sectionTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#111827',
+  },
+  seeAll: {
+    fontSize: 14,
+    color: '#F97316',
+    fontWeight: '600',
+  },
+  popularScroll: {
+    paddingRight: 16,
+    gap: 12,
+  },
+  popularCard: {
+    width: CARD_WIDTH,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    overflow: 'hidden',
+    marginRight: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  popularImage: {
+    width: '100%',
+    height: 180,
+    backgroundColor: '#F3F4F6',
+  },
+  imagePlaceholder: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  popularInfo: {
+    padding: 12,
+  },
+  popularBrand: {
+    fontSize: 11,
+    color: '#6B7280',
+    marginBottom: 2,
+    textTransform: 'uppercase',
+    fontWeight: '600',
+  },
+  popularName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#111827',
+    marginBottom: 6,
+    height: 36,
+  },
+  popularPrice: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#F97316',
   },
   categoryScroll: {
     marginBottom: 10,

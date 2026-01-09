@@ -26,7 +26,7 @@ const RegisterScreen = () => {
        * gönderdiğimiz objeye 'role' alanını ekliyoruz.
        * Endpoint adresini backend yapınıza göre kontrol edin.
        */
-      await api.post('/api/users/', {
+      await api.post('/api/v1/users/', {
         username,
         password,
         email,
@@ -34,15 +34,15 @@ const RegisterScreen = () => {
         last_name: lastName,
         role: 'customer', // Web panelindeki "Müşteri" rolü ile eşleşir
       });
-      
+
       Alert.alert(
-        'Başarılı', 
+        'Başarılı',
         'Kayıt başarılı! Web panelindeki kullanıcı listesine eklendiniz. Şimdi giriş yapabilirsiniz.',
         [{ text: 'Tamam', onPress: () => router.replace('/login') }]
       );
     } catch (error: any) {
       console.error('Register error:', error?.response?.data || error);
-      
+
       // Backend'den gelen hata mesajlarını yakalama
       const backendError = error?.response?.data;
       let errorMessage = 'Kayıt başarısız oldu.';
@@ -52,7 +52,7 @@ const RegisterScreen = () => {
         else if (backendError.email) errorMessage = `E-posta: ${backendError.email[0]}`;
         else if (backendError.detail) errorMessage = backendError.detail;
       }
-      
+
       Alert.alert('Kayıt Başarısız', errorMessage);
     } finally {
       setLoading(false);
@@ -64,7 +64,7 @@ const RegisterScreen = () => {
       <View style={styles.content}>
         <Text style={styles.title}>Yeni Hesap Oluştur</Text>
         <Text style={styles.subtitle}>Beko Müşteri Paneli</Text>
-        
+
         <TextInput
           style={styles.input}
           placeholder="Kullanıcı Adı*"
@@ -73,7 +73,7 @@ const RegisterScreen = () => {
           autoCapitalize="none"
           autoCorrect={false}
         />
-        
+
         <TextInput
           style={styles.input}
           placeholder="E-posta*"
@@ -83,7 +83,7 @@ const RegisterScreen = () => {
           autoCapitalize="none"
           autoCorrect={false}
         />
-        
+
         <TextInput
           style={styles.input}
           placeholder="Şifre*"
@@ -92,7 +92,7 @@ const RegisterScreen = () => {
           secureTextEntry
           autoCapitalize="none"
         />
-        
+
         <TextInput
           style={styles.input}
           placeholder="Ad"
@@ -100,7 +100,7 @@ const RegisterScreen = () => {
           onChangeText={setFirstName}
           autoCapitalize="words"
         />
-        
+
         <TextInput
           style={styles.input}
           placeholder="Soyad"
@@ -117,7 +117,7 @@ const RegisterScreen = () => {
               <TouchableOpacity style={styles.mainButton} onPress={handleRegister}>
                 <Text style={styles.buttonText}>Kayıt Ol</Text>
               </TouchableOpacity>
-              
+
               <TouchableOpacity style={styles.secondaryButton} onPress={() => router.back()}>
                 <Text style={styles.secondaryButtonText}>Giriş Ekranına Dön</Text>
               </TouchableOpacity>

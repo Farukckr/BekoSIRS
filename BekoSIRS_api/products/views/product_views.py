@@ -10,7 +10,7 @@ from rest_framework.permissions import IsAuthenticated, AllowAny, IsAdminUser
 from django.db.models import Count
 from django.http import HttpResponse
 
-from products.models import Product, Category, ProductOwnership, WishlistItem, Notification
+from products.models import Product, Category, ProductOwnership, WishlistItem, Notification, ProductAssignment
 from products.serializers import ProductSerializer, CategorySerializer
 
 
@@ -20,7 +20,7 @@ class ProductViewSet(viewsets.ModelViewSet):
     serializer_class = ProductSerializer
 
     def get_permissions(self):
-        if self.action in ["list", "retrieve"]:
+        if self.action in ["list", "retrieve", "popular"]:
             return [AllowAny()]
         return [IsAuthenticated()]
 
@@ -62,6 +62,40 @@ class ProductViewSet(viewsets.ModelViewSet):
             result.append(item)
 
         return Response(result)
+
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="popular",
+        permission_classes=[AllowAny],
+    )
+    def popular(self, request):
+        """GET /api/v1/products/popular/ - Most assigned products."""
+        # Count how many times each product has been assigned
+        product_counts = (
+            ProductAssignment.objects
+            .values('product')
+            .annotate(assignment_count=Count('id'))
+            .order_by('-assignment_count')
+        )
+        
+        # Get product IDs and create a mapping of product_id -> count
+        product_id_to_count = {item['product']: item['assignment_count'] for item in product_counts}
+        product_ids = list(product_id_to_count.keys())
+        
+        # Fetch products in the sorted order
+        products = Product.objects.filter(id__in=product_ids).select_related('category')
+        
+        # Sort products by assignment count
+        sorted_products = sorted(
+            products,
+            key=lambda p: product_id_to_count.get(p.id, 0),
+            reverse=True
+        )
+        
+        # Serialize and return
+        serializer = self.get_serializer(sorted_products, many=True)
+        return Response(serializer.data)
 
     def perform_update(self, serializer):
         """Detect price changes and send notifications."""

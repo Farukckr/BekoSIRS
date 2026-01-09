@@ -3,7 +3,9 @@ from django.contrib.auth.models import Group, Permission
 from .models import (
     Category, Product, ProductOwnership, CustomUser,
     Wishlist, WishlistItem, ViewHistory, Review,
-    ServiceRequest, ServiceQueue, Notification, Recommendation
+    ServiceRequest, ServiceQueue, Notification, Recommendation,
+    District, Area, DepotLocation,
+    ProductAssignment, Delivery, DeliveryRoute, DeliveryRouteStop
 )
 
 # ---------------------------
@@ -331,3 +333,240 @@ class BiometricLoginSerializer(serializers.Serializer):
     """Serializer for biometric login."""
     device_id = serializers.CharField(max_length=255)
     user_id = serializers.IntegerField()
+
+
+# ---------------------------
+# KKTC Location Serializers
+# ---------------------------
+class DistrictSerializer(serializers.ModelSerializer):
+    """Serializer for District (İlçe)"""
+    class Meta:
+        model = District
+        fields = ['id', 'name', 'center_lat', 'center_lng']
+
+
+class AreaSerializer(serializers.ModelSerializer):
+    """Serializer for Area (Mahalle/Köy)"""
+    district_name = serializers.CharField(source='district.name', read_only=True)
+    
+    class Meta:
+        model = Area
+        fields = ['id', 'name', 'district', 'district_name']
+
+
+# ---------------------------
+# Customer Management Serializers
+# ---------------------------
+class CustomerListSerializer(serializers.ModelSerializer):
+    """List serializer for customers with basic info"""
+    district_name = serializers.CharField(source='district.name', read_only=True)
+    area_name = serializers.CharField(source='area.name', read_only=True)
+    full_name = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = CustomUser
+        fields = [
+            'id', 'username', 'email', 'first_name', 'last_name', 'full_name',
+            'phone_number', 'district', 'district_name', 'area', 'area_name'
+        ]
+    
+    def get_full_name(self, obj):
+        """Returns full name or username if names are empty"""
+        full = f"{obj.first_name} {obj.last_name}".strip()
+        return full if full else obj.username
+
+
+class CustomerDetailSerializer(serializers.ModelSerializer):
+    """Detail serializer for customer with all information"""
+    district_name = serializers.CharField(source='district.name', read_only=True)
+    area_name = serializers.CharField(source='area.name', read_only=True)
+    full_name = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = CustomUser
+        fields = [
+            'id', 'username', 'email', 'first_name', 'last_name', 'full_name',
+            'phone_number', 'role', 'is_active',
+            'district', 'district_name', 'area', 'area_name', 'open_address',
+            'address', 'address_city', 'address_lat', 'address_lng',
+            'notify_service_updates', 'notify_price_drops', 'notify_restock',
+            'notify_recommendations', 'notify_warranty_expiry', 'notify_general',
+            'biometric_enabled', 'date_joined', 'last_login'
+        ]
+        read_only_fields = ['id', 'username', 'role', 'date_joined', 'last_login']
+    
+    def get_full_name(self, obj):
+        full = f"{obj.first_name} {obj.last_name}".strip()
+        return full if full else obj.username
+
+
+class CustomerUpdateSerializer(serializers.ModelSerializer):
+    """Update serializer for customer PATCH/PUT operations"""
+    
+    class Meta:
+        model = CustomUser
+        fields = [
+            'first_name', 'last_name', 'email', 'phone_number',
+            'district', 'area', 'open_address', 'address_city',
+            'address_lat', 'address_lng',
+            'notify_service_updates', 'notify_price_drops', 'notify_restock',
+            'notify_recommendations', 'notify_warranty_expiry', 'notify_general'
+        ]
+    
+    def validate(self, attrs):
+        """Validate that area belongs to selected district"""
+        district = attrs.get('district')
+        area = attrs.get('area')
+        
+        # If area is provided, district must also be provided
+        if area and not district:
+            # Check if instance has district
+            if not (self.instance and self.instance.district):
+                raise serializers.ValidationError({
+                    'area': 'Mahalle seçmek için önce ilçe seçmelisiniz.'
+                })
+        
+        # Validate area belongs to district
+        if area and district:
+            if area.district != district:
+                raise serializers.ValidationError({
+                    'area': 'Seçilen mahalle, seçilen ilçeye ait değil.'
+                })
+        
+        return attrs
+
+
+# ---------------------------
+# Delivery & Assignment Serializers
+# ---------------------------
+
+class CustomerSummarySerializer(serializers.ModelSerializer):
+    full_name = serializers.SerializerMethodField()
+    formatted_address = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = CustomUser
+        fields = ['id', 'username', 'first_name', 'last_name', 'full_name', 'email', 'phone_number', 'address', 'formatted_address']
+        
+    def get_full_name(self, obj):
+        return f"{obj.first_name} {obj.last_name}".strip() or obj.username
+
+    def get_formatted_address(self, obj):
+        if obj.address:
+            return obj.address
+        
+        parts = []
+        if obj.open_address:
+            parts.append(obj.open_address)
+        if obj.area:
+            parts.append(obj.area.name)
+        if obj.district:
+            parts.append(obj.district.name)
+        
+        return ", ".join(parts) if parts else ""
+
+class ProductAssignmentSerializer(serializers.ModelSerializer):
+    product = ProductSerializer(read_only=True)
+    product_id = serializers.PrimaryKeyRelatedField(
+        queryset=Product.objects.all(), source='product', write_only=True
+    )
+    customer = CustomerSummarySerializer(read_only=True)
+    customer_id = serializers.PrimaryKeyRelatedField(
+        queryset=CustomUser.objects.filter(role='customer'), source='customer', write_only=True
+    )
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    delivery_info = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProductAssignment
+        fields = [
+            'id', 'customer', 'customer_id', 'product', 'product_id', 
+            'quantity', 'assigned_at', 'status', 'status_display', 'notes', 
+            'assigned_by', 'delivery_info'
+        ]
+        read_only_fields = ['id', 'assigned_at', 'assigned_by']
+
+    def get_delivery_info(self, obj):
+        if hasattr(obj, 'delivery'):
+            return {
+                'id': obj.delivery.id,
+                'status': obj.delivery.status,
+                'status_display': obj.delivery.get_status_display(),
+                'scheduled_date': obj.delivery.scheduled_date,
+                'time_window_start': obj.delivery.time_window_start,
+                'time_window_end': obj.delivery.time_window_end
+            }
+        return None
+
+
+class DeliverySerializer(serializers.ModelSerializer):
+    customer_name = serializers.CharField(source='assignment.customer.username', read_only=True)
+    product_name = serializers.CharField(source='assignment.product.name', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    
+    class Meta:
+        model = Delivery
+        fields = [
+            'id', 'assignment', 'customer_name', 'product_name',
+            'scheduled_date', 'time_window_start', 'time_window_end',
+            'status', 'status_display', 'delivered_at', 'delivered_by',
+            'delivery_order', 'route_batch_id', 'distance_km', 'eta_minutes',
+            'customer_phone_snapshot', 'address_snapshot'
+        ]
+        read_only_fields = ['id', 'created_at']
+
+class DeliveryRouteStopSerializer(serializers.ModelSerializer):
+    delivery = DeliverySerializer(read_only=True)
+    
+    class Meta:
+        model = DeliveryRouteStop
+        fields = [
+            'id', 'delivery', 'stop_order', 'distance_from_previous_km', 
+            'duration_from_previous_min', 'estimated_arrival'
+        ]
+
+class DeliveryRouteSerializer(serializers.ModelSerializer):
+    stops = DeliveryRouteStopSerializer(many=True, read_only=True)
+    
+    class Meta:
+        model = DeliveryRoute
+        fields = [
+            'id', 'date', 'store_address', 'total_distance_km', 
+            'total_duration_min', 'is_optimized', 'optimized_at', 'stops'
+        ]
+
+
+# ---------------------------
+# Depot Location Serializers
+# ---------------------------
+class DepotLocationSerializer(serializers.ModelSerializer):
+    """Serializer for DepotLocation - full details"""
+    created_by_name = serializers.CharField(source='created_by.username', read_only=True)
+    
+    class Meta:
+        model = DepotLocation
+        fields = [
+            'id', 'name', 'latitude', 'longitude', 'is_default',
+            'created_by', 'created_by_name', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_by', 'created_at', 'updated_at']
+
+
+class DepotLocationCreateSerializer(serializers.ModelSerializer):
+    """Serializer for creating/updating depots"""
+    
+    class Meta:
+        model = DepotLocation
+        fields = ['name', 'latitude', 'longitude', 'is_default']
+    
+    def validate_name(self, value):
+        # Check if depot with this name already exists (excluding self in update)
+        queryset = DepotLocation.objects.filter(name=value)
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+        
+        if queryset.exists():
+            raise serializers.ValidationError("Bu isimde bir depo zaten mevcut.")
+        
+        return value
+

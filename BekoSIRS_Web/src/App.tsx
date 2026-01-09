@@ -7,12 +7,14 @@ import ProductsPage from "./pages/ProductsPage";
 import AddProductPage from "./pages/AddProductPage";
 import CategoriesPage from "./pages/CategoriesPage";
 import UsersPage from "./pages/UsersPage";
+import CustomersPage from "./pages/CustomersPage";
 import GroupsPage from "./pages/GroupsPage";
 import ServiceRequestsPage from "./pages/ServiceRequestsPage";
 import ReviewsPage from "./pages/ReviewsPage";
 import AssignmentsPage from "./pages/AssignmentsPage";
 import NotificationsPage from "./pages/NotificationsPage";
 import DeliveriesPage from "./pages/DeliveriesPage";
+import DepotsPage from "./pages/DepotsPage";
 
 export default function App() {
   return (
@@ -34,6 +36,9 @@ export default function App() {
         {/* 🔹 Kullanıcı yönetimi */}
         <Route path="/dashboard/users" element={<UsersPage />} />
 
+        {/* 🔹 Müşteri yönetimi */}
+        <Route path="/dashboard/customers" element={<CustomersPage />} />
+
         {/* 🔹 Grup & izin yönetimi */}
         <Route path="/dashboard/groups" element={<GroupsPage />} />
 
@@ -51,6 +56,9 @@ export default function App() {
 
         {/* 🔹 Teslimat Yönetimi */}
         <Route path="/dashboard/deliveries" element={<DeliveriesPage />} />
+
+        {/* 🔹 Depo Yönetimi */}
+        <Route path="/dashboard/depots" element={<DepotsPage />} />
 
         {/* 🔹 Bilinmeyen rota -> login'e yönlendir */}
         <Route path="*" element={<Navigate to="/" replace />} />

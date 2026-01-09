@@ -44,7 +44,7 @@ export default function ProductsScreen() {
 
   const fetchProducts = async () => {
     try {
-      const response = await api.get('/api/products/');
+      const response = await api.get('/api/v1/products/');
       setProducts(response.data);
       setFilteredProducts(response.data);
     } catch (error: any) {
@@ -87,7 +87,7 @@ export default function ProductsScreen() {
   return (
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" />
-      
+
       {/* Search Bar - Modern Beko Tasarımı */}
       <View style={styles.searchWrapper}>
         <View style={styles.searchContainer}>

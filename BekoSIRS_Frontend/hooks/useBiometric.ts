@@ -226,7 +226,7 @@ export const useBiometric = () => {
             }
 
             // Use refresh token to get new access token
-            const tokenResponse = await api.post('/api/token/refresh/', {
+            const tokenResponse = await api.post('/api/v1/token/refresh/', {
                 refresh: storedRefreshToken,
             });
 

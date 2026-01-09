@@ -1,35 +1,19 @@
 import axios from 'axios';
-import { getToken, clearAllTokens } from '../storage/storage.native';
-import { router } from 'expo-router';
+import { getToken } from '../storage/storage.native';
 import Constants from 'expo-constants';
 
-// 🔹 API URL Configuration
-// Uses environment variables - set EXPO_PUBLIC_API_URL in .env file
-// Default fallback for development
-const getApiUrl = () => {
-  // Check for Expo environment variable (EXPO_PUBLIC_ prefix is auto-exposed)
-  const envUrl = process.env.EXPO_PUBLIC_API_URL;
+// 🔹 Get your computer's local IP address
+// Replace this with YOUR actual IP address from ipconfig/ifconfig
+const COMPUTER_IP = '192.168.0.107';
 
-  if (envUrl) {
-    return envUrl;
-  }
-
-  // Fallback: try to detect local IP from Expo manifest
-  const debuggerHost = Constants.expoConfig?.hostUri?.split(':')[0];
-  if (debuggerHost) {
-    return `http://${debuggerHost}:8000/`;
-  }
-
-  // Production fallback
-  return process.env.EXPO_PUBLIC_PROD_API_URL || 'https://api.bekosirs.com/';
-};
-
-const API_BASE_URL = getApiUrl();
+// 🔹 Expo Go requires using your computer's local network IP
+const API_BASE_URL = __DEV__
+  ? `http://${COMPUTER_IP}:8000/`
+  : 'https://your-production-api.com/';
 
 console.log('🔗 API Base URL:', API_BASE_URL);
 console.log('📱 Device:', Constants.deviceName);
 console.log('🌐 Platform:', Constants.platform);
-
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -37,7 +21,7 @@ const api = axios.create({
     'Content-Type': 'application/json',
     'Accept': 'application/json',
   },
-  timeout: 30000, // 30 second timeout for mobile networks and heavy ML ops
+  timeout: 15000, // 15 second timeout for mobile networks
 });
 
 // Request interceptor
@@ -76,15 +60,6 @@ api.interceptors.response.use(
         data: error.response.data,
         url: error.config?.url
       });
-
-      // 401 Unauthorized Handling
-      if (error.response.status === 401) {
-        console.warn('🔒 Session expired (401), clearing tokens and redirecting to login...');
-        clearAllTokens().then(() => {
-          // Use Replace to prevent going back
-          router.replace('/login');
-        });
-      }
     } else if (error.request) {
       // Request made but no response received
       console.error('❌ Network Error - No Response:', {
@@ -94,9 +69,9 @@ api.interceptors.response.use(
       });
       console.error('💡 Troubleshooting:');
       console.error('   1. Check if backend is running: python manage.py runserver 0.0.0.0:8000');
-      console.error('   2. Verify EXPO_PUBLIC_API_URL in .env file');
+      console.error('   2. Verify IP address is correct:', COMPUTER_IP);
       console.error('   3. Ensure phone and computer are on same WiFi');
-      console.error('   4. Current API URL:', API_BASE_URL);
+      console.error('   4. Check Django ALLOWED_HOSTS includes:', COMPUTER_IP);
       console.error('   5. Disable firewall temporarily to test');
     } else {
       // Error in request setup
@@ -141,15 +116,23 @@ export const testBackendConnection = async () => {
 };
 
 // ----------------------------------------
+// 🔹 PRODUCT API
+// ----------------------------------------
+export const productAPI = {
+  // Get popular products (most assigned)
+  getPopularProducts: () => api.get('api/v1/products/popular/'),
+};
+
+// ----------------------------------------
 // 🔹 WISHLIST API
 // ----------------------------------------
 export const wishlistAPI = {
   // İstek listesini getir
-  getWishlist: () => api.get('api/wishlist/'),
+  getWishlist: () => api.get('api/v1/wishlist/'),
 
   // Ürün ekle
   addItem: (productId: number, note?: string) =>
-    api.post('api/wishlist/add-item/', {
+    api.post('api/v1/wishlist/add-item/', {
       product_id: productId,
       note: note || '',
       notify_on_price_drop: true,
@@ -158,15 +141,11 @@ export const wishlistAPI = {
 
   // Ürün çıkar
   removeItem: (productId: number) =>
-    api.delete(`api/wishlist/remove-item/${productId}/`),
+    api.delete(`api/v1/wishlist/remove-item/${productId}/`),
 
   // Ürün listede mi kontrol et
   checkItem: (productId: number) =>
-    api.get(`api/wishlist/check/${productId}/`),
-
-  // Ürün güncelle (Bildirim ayarları vb.)
-  updateItem: (productId: number, data: { notify_on_price_drop?: boolean; notify_on_restock?: boolean; note?: string }) =>
-    api.patch(`api/wishlist/update-item/${productId}/`, data),
+    api.get(`api/v1/wishlist/check/${productId}/`),
 };
 
 // ----------------------------------------
@@ -174,14 +153,14 @@ export const wishlistAPI = {
 // ----------------------------------------
 export const viewHistoryAPI = {
   // Görüntüleme geçmişini getir
-  getHistory: () => api.get('api/view-history/'),
+  getHistory: () => api.get('api/v1/view-history/'),
 
   // Görüntüleme kaydet
   recordView: (productId: number) =>
-    api.post('api/view-history/record/', { product_id: productId }),
+    api.post('api/v1/view-history/record/', { product_id: productId }),
 
   // Geçmişi temizle
-  clearHistory: () => api.delete('api/view-history/clear/'),
+  clearHistory: () => api.delete('api/v1/view-history/clear/'),
 };
 
 // ----------------------------------------
@@ -189,15 +168,15 @@ export const viewHistoryAPI = {
 // ----------------------------------------
 export const reviewAPI = {
   // Kullanıcının yorumlarını getir
-  getMyReviews: () => api.get('api/reviews/'),
+  getMyReviews: () => api.get('api/v1/reviews/'),
 
   // Ürüne ait yorumları getir
   getProductReviews: (productId: number) =>
-    api.get(`api/reviews/product/${productId}/`),
+    api.get(`api/v1/reviews/product/${productId}/`),
 
   // Yorum ekle
   addReview: (productId: number, rating: number, comment?: string) =>
-    api.post('api/reviews/', {
+    api.post('api/v1/reviews/', {
       product: productId,
       rating,
       comment: comment || '',
@@ -205,10 +184,10 @@ export const reviewAPI = {
 
   // Yorumu güncelle
   updateReview: (reviewId: number, rating: number, comment?: string) =>
-    api.patch(`api/reviews/${reviewId}/`, { rating, comment }),
+    api.patch(`api/v1/reviews/${reviewId}/`, { rating, comment }),
 
   // Yorumu sil
-  deleteReview: (reviewId: number) => api.delete(`api/reviews/${reviewId}/`),
+  deleteReview: (reviewId: number) => api.delete(`api/v1/reviews/${reviewId}/`),
 };
 
 // ----------------------------------------
@@ -216,7 +195,7 @@ export const reviewAPI = {
 // ----------------------------------------
 export const serviceRequestAPI = {
   // Servis taleplerimi getir
-  getMyRequests: () => api.get('api/service-requests/'),
+  getMyRequests: () => api.get('api/v1/service-requests/'),
 
   // Yeni talep oluştur
   createRequest: (
@@ -224,7 +203,7 @@ export const serviceRequestAPI = {
     requestType: 'repair' | 'maintenance' | 'warranty' | 'complaint' | 'other',
     description: string
   ) =>
-    api.post('api/service-requests/', {
+    api.post('api/v1/service-requests/', {
       product_ownership: productOwnershipId,
       request_type: requestType,
       description,
@@ -232,10 +211,10 @@ export const serviceRequestAPI = {
 
   // Talep detayını getir
   getRequestDetail: (requestId: number) =>
-    api.get(`api/service-requests/${requestId}/`),
+    api.get(`api/v1/service-requests/${requestId}/`),
 
   // Kuyruk durumunu getir
-  getQueueStatus: () => api.get('api/service-requests/queue-status/'),
+  getQueueStatus: () => api.get('api/v1/service-requests/queue-status/'),
 };
 
 // ----------------------------------------
@@ -243,20 +222,20 @@ export const serviceRequestAPI = {
 // ----------------------------------------
 export const notificationAPI = {
   // Bildirimleri getir
-  getNotifications: () => api.get('api/notifications/'),
+  getNotifications: () => api.get('api/v1/notifications/'),
 
   // Okunmamış bildirim sayısı
-  getUnreadCount: () => api.get('api/notifications/unread-count/'),
+  getUnreadCount: () => api.get('api/v1/notifications/unread-count/'),
 
   // Bildirimi okundu işaretle
   markAsRead: (notificationId: number) =>
-    api.post(`api/notifications/${notificationId}/read/`),
+    api.post(`api/v1/notifications/${notificationId}/read/`),
 
   // Tümünü okundu işaretle
-  markAllAsRead: () => api.post('api/notifications/read-all/'),
+  markAllAsRead: () => api.post('api/v1/notifications/read-all/'),
 
   // Bildirim ayarlarını getir
-  getSettings: () => api.get('api/profile/notification-settings/'),
+  getSettings: () => api.get('api/v1/notification-settings/'),
 
   // Bildirim ayarlarını güncelle
   updateSettings: (settings: {
@@ -266,7 +245,7 @@ export const notificationAPI = {
     notify_recommendations?: boolean;
     notify_warranty_expiry?: boolean;
     notify_general?: boolean;
-  }) => api.patch('api/profile/notification-settings/', settings),
+  }) => api.patch('api/v1/notification-settings/', settings),
 };
 
 // ----------------------------------------
@@ -274,14 +253,14 @@ export const notificationAPI = {
 // ----------------------------------------
 export const recommendationAPI = {
   // Önerileri getir
-  getRecommendations: (refresh?: boolean) => api.get(refresh ? 'api/recommendations/?refresh=true' : 'api/recommendations/'),
+  getRecommendations: () => api.get('api/v1/recommendations/'),
 
   // Yeni öneriler oluştur
-  generateRecommendations: () => api.post('api/recommendations/generate/'),
+  generateRecommendations: () => api.post('api/v1/recommendations/generate/'),
 
   // Öneri tıklaması kaydet
   recordClick: (recommendationId: number) =>
-    api.post(`api/recommendations/${recommendationId}/click/`),
+    api.post(`api/v1/recommendations/${recommendationId}/click/`),
 };
 
 // ----------------------------------------
@@ -289,14 +268,30 @@ export const recommendationAPI = {
 // ----------------------------------------
 export const productOwnershipAPI = {
   // Sahip olduğum ürünleri getir (basit liste - my-products sayfası için)
-  getMyProducts: () => api.get('api/my-products/'),
+  getMyProducts: () => api.get('api/v1/my-products/'),
 
   // Sahip olduğum ürünleri garanti bilgileriyle getir (servis talepleri için)
-  getMyOwnerships: () => api.get('api/product-ownerships/my-ownerships/'),
+  getMyOwnerships: () => api.get('api/v1/product-ownerships/my-ownerships/'),
 
   // Ürün sahipliği detayı
   getOwnershipDetail: (ownershipId: number) =>
-    api.get(`api/product-ownerships/${ownershipId}/`),
+    api.get(`api/v1/product-ownerships/${ownershipId}/`),
+};
+
+// ----------------------------------------
+// 🔹 ASSIGNMENT / DELIVERY API
+// ----------------------------------------
+export const assignmentAPI = {
+  // Atamalarımı (Sipariş/Teslimat) getir
+  getMyAssignments: () => api.get('api/v1/assignments/'),
+};
+
+// ----------------------------------------
+// 🔹 LOCATION API (KKTC)
+// ----------------------------------------
+export const locationAPI = {
+  getDistricts: () => api.get('api/v1/locations/districts/'),
+  getAreas: (districtId: number) => api.get(`api/v1/locations/areas/?district=${districtId}`),
 };
 
 export default api;
